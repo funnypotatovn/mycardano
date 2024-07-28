@@ -1,0 +1,75 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
+
+module LockADA where
+
+import           Control.Monad         (void)
+import           Data.Text              (Text)
+import           GHC.Generics           (Generic)
+import           Ledger                 (POSIXTime, ScriptContext, ScriptPurpose, validatorHash)
+import qualified Ledger.Typed.Scripts   as Scripts
+import           Ledger.Value           (Value)
+import qualified Ledger.Value           as Value
+import           Playground.Contract    (printJson, ensureKnownCurrencies, stage, writeValidator)
+import           Plutus.Contract        as Contract
+import           PlutusTx               (unstableMakeIsData, compile)
+import           PlutusTx.Prelude       hiding (Semigroup(..), unless)
+import qualified Prelude                as Prelude
+
+-- Define the schema for the contract
+data LockADAParams = LockADAParams
+    { lockTime :: POSIXTime
+    } deriving (Generic, Show)
+
+instance ToJSON LockADAParams
+instance FromJSON LockADAParams
+instance ToSchema LockADAParams
+
+-- Define the data type and instance for the validator
+data LockADA = LockADA
+    { deadline :: POSIXTime
+    } deriving (Generic, Show)
+
+instance Scripts.ValidatorTypes LockADA where
+    type instance DatumType LockADA = ()
+    type instance RedeemerType LockADA = ()
+
+{-# INLINABLE mkValidator #-}
+mkValidator :: LockADA -> () -> ScriptContext -> Bool
+mkValidator LockADA{..} () ctx =
+    let
+        currentTime = scriptContextTxInfo ctx
+    in
+        currentTime >= deadline
+
+data LockADA
+instance Scripts.ValidatorTypes LockADA where
+    type instance DatumType LockADA = ()
+    type instance RedeemerType LockADA = ()
+
+typedValidator :: Scripts.TypedValidator LockADA
+typedValidator = Scripts.mkTypedValidator @LockADA
+    $$(PlutusTx.compile [|| mkValidator ||])
+    $$(PlutusTx.compile [|| wrap ||])
+  where
+    wrap = Scripts.wrapValidator @() @()
+
+validator :: Validator
+validator = Scripts.validatorScript typedValidator
+
+validatorHash :: Ledger.ValidatorHash
+validatorHash = Scripts.validatorHash typedValidator
+
+-- This is how we deploy the contract
+writeContract :: IO ()
+writeContract = do
+    let params = LockADAParams
+            { lockTime = 2 * 365 * 24 * 60 * 60 -- 2 years in seconds
+            }
+    writeValidator @LockADA
+    printJson (validatorHash, params)
